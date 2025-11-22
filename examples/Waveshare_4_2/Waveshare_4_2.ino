@@ -40,14 +40,23 @@
 
 enum alignment {LEFT, RIGHT, CENTER};
 
-// Connections for e.g. LOLIN D32
-static const uint8_t EPD_BUSY = 4;  // to EPD BUSY
-static const uint8_t EPD_CS   = 5;  // to EPD CS
-static const uint8_t EPD_RST  = 16; // to EPD RST
-static const uint8_t EPD_DC   = 17; // to EPD DC
-static const uint8_t EPD_SCK  = 18; // to EPD CLK
-static const uint8_t EPD_MISO = 19; // Master-In Slave-Out not used, as no data from display
-static const uint8_t EPD_MOSI = 23; // to EPD DIN
+// Connections for CrowPanel
+static const uint8_t EPD_BUSY = 48;  // to EPD BUSY
+static const uint8_t EPD_CS   = 45;  // to EPD CS
+static const uint8_t EPD_RST  = 47; // to EPD RST
+static const uint8_t EPD_DC   = 46; // to EPD DC
+static const uint8_t EPD_SCK  = 12; // to EPD CLK
+static const uint8_t EPD_MISO = -1; // Master-In Slave-Out not used, as no data from display
+static const uint8_t EPD_MOSI = 11; // to EPD DIN
+
+// // Connections for e.g. LOLIN D32
+// static const uint8_t EPD_BUSY = 4;  // to EPD BUSY
+// static const uint8_t EPD_CS   = 5;  // to EPD CS
+// static const uint8_t EPD_RST  = 16; // to EPD RST
+// static const uint8_t EPD_DC   = 17; // to EPD DC
+// static const uint8_t EPD_SCK  = 18; // to EPD CLK
+// static const uint8_t EPD_MISO = 19; // Master-In Slave-Out not used, as no data from display
+// static const uint8_t EPD_MOSI = 23; // to EPD DIN
 
 // Connections for e.g. Waveshare ESP32 e-Paper Driver Board
 //static const uint8_t EPD_BUSY = 25;
@@ -58,8 +67,10 @@ static const uint8_t EPD_MOSI = 23; // to EPD DIN
 //static const uint8_t EPD_MISO = 12; // Master-In Slave-Out not used, as no data from display
 //static const uint8_t EPD_MOSI = 14;
 
-GxEPD2_BW<GxEPD2_420, GxEPD2_420::HEIGHT> display(GxEPD2_420(/*CS=D8*/ EPD_CS, /*DC=D3*/ EPD_DC, /*RST=D4*/ EPD_RST, /*BUSY=D2*/ EPD_BUSY));
+// GxEPD2_BW<GxEPD2_420, GxEPD2_420::HEIGHT> display(GxEPD2_420(/*CS=D8*/ EPD_CS, /*DC=D3*/ EPD_DC, /*RST=D4*/ EPD_RST, /*BUSY=D2*/ EPD_BUSY));
 //GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT> display(GxEPD2_420_GDEY042T81(/*CS=D8*/ EPD_CS, /*DC=D3*/ EPD_DC, /*RST=D4*/ EPD_RST, /*BUSY=D2*/ EPD_BUSY));
+//CrowPanel
+GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT> display(GxEPD2_420_GDEY042T81(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 // For the WeAct Studio 4.2" Epaper Module you need to replace GxEPD2_420 with GxEPD2_420_GDEY042T81
 U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;  // Select u8g2 font from here: https://github.com/olikraus/u8g2/wiki/fntlistall
 
@@ -99,9 +110,9 @@ float humidity_readings[max_readings]    = {0};
 float rain_readings[max_readings]        = {0};
 float snow_readings[max_readings]        = {0};
 
-long SleepDuration = 30; // Sleep time in minutes, aligned to the nearest minute boundary, so if 30 will always update at 00 or 30 past the hour
-int  WakeupTime    = 7;  // Don't wakeup until after 07:00 to save battery power
-int  SleepTime     = 23; // Sleep after (23+1) 00:00 to save battery power
+long SleepDuration = 1; // Sleep time in minutes, aligned to the nearest minute boundary, so if 30 will always update at 00 or 30 past the hour
+int  WakeupTime    = 6;  // Don't wakeup until after 07:00 to save battery power
+int  SleepTime     = 22; // Sleep after (23+1) 00:00 to save battery power
 
 //#########################################################################################
 void setup() {
@@ -156,6 +167,18 @@ void DisplayWeather() {                 // 4.2" e-paper display is 400x300 resol
   if (WxConditions[0].Visibility > 0) Visibility(335, 100, String(WxConditions[0].Visibility) + "M");
   if (WxConditions[0].Cloudcover > 0) CloudCover(350, 125, WxConditions[0].Cloudcover);
   DrawAstronomySection(233, 74);        // Astronomy section Sun rise/set, Moon phase and Moon icon
+  display.setPartialWindow(0,0,SCREEN_WIDTH,SCREEN_HEIGHT);
+  display.firstPage();
+  do{
+    DrawMainWeatherSection(172, 70);      // Centre section of display for Location, temperature, Weather report, current Wx Symbol and wind direction
+    DrawForecastSection(233, 15);         // 3hr forecast boxes
+    DisplayPrecipitationSection(233, 82); // Precipitation sectio
+    if (WxConditions[0].Visibility > 0) Visibility(335, 100, String(WxConditions[0].Visibility) + "M");
+    if (WxConditions[0].Cloudcover > 0) CloudCover(350, 125, WxConditions[0].Cloudcover);
+    DrawAstronomySection(233, 74);        // Astronomy section Sun rise/set, Moon phase and Moon icon
+  } while(display.nextPage());
+  display.display(true);
+  delay(200);
 }
 //#########################################################################################
 void DrawHeadingSection() {
@@ -880,7 +903,7 @@ void drawStringMaxWidth(int x, int y, unsigned int text_width, String text, alig
 }
 //#########################################################################################
 void InitialiseDisplay() {
-  display.init(115200, true, 2, false);
+  display.init(115200, true, 50, false);
   // display.init(); for older Waveshare HAT's
   SPI.end();
   SPI.begin(EPD_SCK, EPD_MISO, EPD_MOSI, EPD_CS);
@@ -890,8 +913,10 @@ void InitialiseDisplay() {
   u8g2Fonts.setForegroundColor(GxEPD_BLACK); // apply Adafruit GFX color
   u8g2Fonts.setBackgroundColor(GxEPD_WHITE); // apply Adafruit GFX color
   u8g2Fonts.setFont(u8g2_font_helvB10_tf);   // select u8g2 font from here: https://github.com/olikraus/u8g2/wiki/fntlistall
-  display.fillScreen(GxEPD_WHITE);
   display.setFullWindow();
+  display.fillScreen(GxEPD_WHITE);
+  display.display(true);
+  delay(200);
 }
 /*
   Version 12.0 reformatted to use u8g2 fonts
@@ -914,4 +939,3 @@ void InitialiseDisplay() {
   Version 12.5
   1. Modified for GxEPD2 changes
 */
-
