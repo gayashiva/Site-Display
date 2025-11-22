@@ -3,71 +3,39 @@
 #include <Arduino.h>
 #include <HTTPClient.h>
 
-typedef struct { // For current Day and Day 1, 2, 3, etc
-  String Time;
-  float  High;
-  float  Low;
-} HL_record_type;
+// Site Data API reading structure
+typedef struct {
+  int      Dt;           // Unix timestamp
+  String   Timestamp;    // Human readable timestamp
+  float    Temperature;  // Ambient temperature
+  float    WaterTemp;    // Water temperature
+  float    Pressure;     // Pressure reading
+  float    Voltage;      // Battery/supply voltage
+  int      Counter;      // Reading counter
+} SiteReading_type;
 
-HL_record_type  HLReadings[max_readings];
+// Site metadata
+typedef struct {
+  String   SiteName;
+  String   SiteType;     // "air" or "drip"
+  bool     Active;
+  int      TimezoneOffset;
+  int      QueryTime;
+} SiteInfo_type;
 
-typedef struct { // For current Day and Day 1, 2, 3, etc
-  int      Dt;
-  String   Period;
-  String   Icon;
-  String   Trend;
-  String   Main0;
-  String   Forecast0;
-  String   Forecast1;
-  String   Forecast2;
-  String   Description;
-  String   Time;
-  String   Country;
-  float    lat;
-  float    lon;
-  float    Temperature;
-  float    FeelsLike;
-  float    Humidity;
-  float    DewPoint;
-  float    High;
-  float    Low;
-  float    Winddir;
-  float    Windspeed;
-  float    Rainfall;
-  float    Snowfall;
-  float    Pressure;
-  int      Cloudcover;
-  int      Visibility;
-  int      Sunrise;
-  int      Sunset;
-  int      Moonrise;
-  int      Moonset;
-  int      Timezone;
-  float    UVI;
-  float    PoP;
-} Forecast_record_type;
+SiteInfo_type     SiteInfo;
+SiteReading_type  CurrentReading;
+SiteReading_type  SiteReadings[max_readings];
+int               NumReadings = 0;
 
-Forecast_record_type  WxConditions[1];
-Forecast_record_type  WxForecast[max_readings];
-Forecast_record_type  Daily[8];
-
-bool ReceiveOneCallWeather(WiFiClient& client, bool print);
-bool DecodeOneCallWeather(WiFiClient& json, bool print);
-void Convert_Readings_to_Imperial();
+// Function declarations
+bool ReceiveSiteData(WiFiClient& client, bool print);
+bool DecodeSiteData(JsonDocument& doc, bool print);
 String ConvertUnixTime(int unix_time);
-float mm_to_inches(float value_mm);
-float hPa_to_inHg(float value_hPa);
 int JulianDate(int d, int m, int y);
-float SumOfPrecip(float DataArray[], int readings);
 String TitleCase(String text);
 double NormalizedMoonPhase(int d, int m, int y);
 
-//#########################################################################################
-void Convert_Readings_to_Imperial() {
-  WxConditions[0].Pressure = hPa_to_inHg(WxConditions[0].Pressure);
-  WxForecast[1].Rainfall   = mm_to_inches(WxForecast[1].Rainfall);
-  WxForecast[1].Snowfall   = mm_to_inches(WxForecast[1].Snowfall);
-}
 //#########################################################################################
 String ConvertUnixTime(int unix_time) {
   // Returns either '21:12  ' or ' 09:12pm' depending on Units mode
@@ -83,125 +51,107 @@ String ConvertUnixTime(int unix_time) {
   return output;
 }
 //#########################################################################################
-// Test call: http://api.openweathermap.org/data/3.0/onecall?lat=33&lon=-112&APPID=1a838280c1f7a40c3f8a5e5bc573e22d&mode=json&units=metric&lang=US&exclude=minutely
-bool ReceiveOneCallWeather(WiFiClient& client, bool print) {
-  Serial.println("Rx weather data...");
-  const String units = (Units == "M" ? "metric" : "imperial");
+// Fetch data from Site Data API (HTTPS)
+bool ReceiveSiteData(WiFiClient& client, bool print) {
+  Serial.println("Fetching site data...");
   client.stop(); // close connection before sending a new request
-  HTTPClient http;    
-  // Update for API 3.0 June '24
-  String uri = "/data/3.0/onecall?lat=" + LAT + "&lon=" + LON + "&appid=" + apikey + "&mode=json&units=" + units + "&lang=" + Language + "&exclude=minutely";
-  http.begin(client, server, 80, uri);
+  HTTPClient http;
+
+  // Build the API URL - use HTTPS (port 443)
+  String url = "https://" + String(server) + "/prod/site?site_name=" + SiteName + "&count=" + String(ReadingCount);
+  Serial.println("URL: " + url);
+
+  http.begin(url);
   int httpCode = http.GET();
+
   if(httpCode == HTTP_CODE_OK) {
-    if (!DecodeOneCallWeather(http.getStream(), print)) return false;
-    client.stop();
+    String payload = http.getString();
+    if (print) Serial.println("Response: " + payload);
+
+    // Parse JSON from string
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, payload);
+    if (error) {
+      Serial.print("deserializeJson() failed: ");
+      Serial.println(error.c_str());
+      http.end();
+      return false;
+    }
+
+    if (!DecodeSiteData(doc, print)) {
+      http.end();
+      return false;
+    }
     http.end();
     return true;
   }
-  else
-  {
-    Serial.printf("connection failed, error: %s", http.errorToString(httpCode).c_str());
-    client.stop();
+  else {
+    Serial.printf("Connection failed, HTTP code: %d, error: %s\n", httpCode, http.errorToString(httpCode).c_str());
     http.end();
     return false;
   }
-  http.end();
-  return true;
 }
 //#######################################################################################
-bool DecodeOneCallWeather(WiFiClient& json, bool print) {
-  if (print) Serial.println("Decoding Wx Data...");
-  JsonDocument doc;                                        // allocate the JsonDocument
-  DeserializationError error = deserializeJson(doc, json); // Deserialize the JSON document
-  if (error) {                                             // Test if parsing succeeds.
-    Serial.print("deserializeJson() failed: ");
-    Serial.println(error.c_str());
-    return false;
+bool DecodeSiteData(JsonDocument& doc, bool print) {
+  if (print) Serial.println("Decoding Site Data...");
+
+  // Parse site metadata
+  SiteInfo.SiteName       = doc["site_name"].as<String>();
+  SiteInfo.SiteType       = doc["site_type"].as<String>();
+  SiteInfo.Active         = doc["active"];
+  SiteInfo.TimezoneOffset = doc["timezone_offset"];
+  SiteInfo.QueryTime      = doc["query_time"];
+
+  if (print) {
+    Serial.println("Site: " + SiteInfo.SiteName);
+    Serial.println("Type: " + SiteInfo.SiteType);
+    Serial.println("Active: " + String(SiteInfo.Active));
+    Serial.println("TZ Offset: " + String(SiteInfo.TimezoneOffset));
   }
-  // convert it to a JsonObject
-  JsonObject root = doc.as<JsonObject>();
-  const char* TempString;
-  Serial.println("\nDecoding data...");
-  if (print) Serial.println("Displaying CURRENT conditions..."); // Needed for the main display items
-  WxConditions[0].Timezone    = doc["timezone_offset"];      if (print) Serial.println("TZon: " + String(WxConditions[0].Timezone));
+
+  // Parse current reading
   JsonObject current = doc["current"];
-  JsonObject current_weather_0 = current["weather"][0];
-  int weather_id = current_weather_0["id"]; // 800
-  const char* main_weather = current_weather_0["main"]; // "Clear"
-  const char* weather = current_weather_0["description"]; // "Clear Skies"
-  WxConditions[0].Description = String(weather);              if (print) Serial.println("Fore: " + String(weather));
-  const char* current_icon = current_weather_0["icon"];
-  WxConditions[0].Icon        = current_icon;                 if (print) Serial.println("Icon: " + String(WxConditions[0].Icon));
-  int sunriseL =  int(WxConditions[0].Timezone) + int(current["sunrise"]);
-  WxConditions[0].Sunrise     = current["sunrise"];           if (print) Serial.println("SRis: " + String(WxConditions[0].Sunrise) + " " + ConvertUnixTime(sunriseL));
-  int sunsetL  =  int(WxConditions[0].Timezone) + int(current["sunset"]);
-  WxConditions[0].Sunset      = current["sunset"];            if (print) Serial.println("SSet: " + String(WxConditions[0].Sunset)  + " " + ConvertUnixTime(sunsetL));
-  WxConditions[0].Temperature = current["temp"];              if (print) Serial.println("Temp: " + String(WxConditions[0].Temperature));
-  WxConditions[0].FeelsLike   = current["feels_like"];        if (print) Serial.println("FLik: " + String(WxConditions[0].FeelsLike));
-  WxConditions[0].Pressure    = current["pressure"];          if (print) Serial.println("Pres: " + String(WxConditions[0].Pressure));
-  WxConditions[0].Humidity    = current["humidity"];          if (print) Serial.println("Humi: " + String(WxConditions[0].Humidity));
-  WxConditions[0].DewPoint    = current["dew_point"];         if (print) Serial.println("DewP: " + String(WxConditions[0].DewPoint));
-  WxConditions[0].UVI         = current["uvi"];               if (print) Serial.println("UVin: " + String(WxConditions[0].UVI));
-  WxConditions[0].Cloudcover  = current["clouds"];            if (print) Serial.println("CCov: " + String(WxConditions[0].Cloudcover));
-  WxConditions[0].Visibility  = current["visibility"];        if (print) Serial.println("Visi: " + String(WxConditions[0].Visibility));
-  WxConditions[0].Windspeed   = current["wind_speed"];        if (print) Serial.println("WSpd: " + String(WxConditions[0].Windspeed));
-  WxConditions[0].Winddir     = current["wind_deg"];          if (print) Serial.println("WDir: " + String(WxConditions[0].Winddir));
+  CurrentReading.Dt          = current["dt"];
+  CurrentReading.Timestamp   = current["timestamp"].as<String>();
+  CurrentReading.Temperature = current["temperature"];
+  CurrentReading.WaterTemp   = current["water_temp"];
+  CurrentReading.Pressure    = current["pressure"];
+  CurrentReading.Voltage     = current["voltage"];
+  CurrentReading.Counter     = current["counter"];
 
-  JsonArray hourlyArray = doc["hourly"];
-
-  if (print) Serial.println("\nDisplaying 48-hrs of HOURLY data..."); // Needed for the graphs
-  for (int r = 0; r < max_readings; r++) {
-    JsonObject hourly = hourlyArray[r];
-    if (print) Serial.println("Day (Hour)-" + String(r) + " --------------");
-    WxForecast[r].Dt          = hourly["dt"];                 if (print) Serial.println(ConvertUnixTime(WxForecast[r].Dt));
-    WxForecast[r].Temperature = hourly["temp"];               if (print) Serial.println("Temp: " + String(WxForecast[r].Temperature));
-    WxForecast[r].FeelsLike   = hourly["feels_like"];         if (print) Serial.println("FLik: " + String(WxForecast[r].FeelsLike));
-    WxForecast[r].Pressure    = hourly["pressure"];           if (print) Serial.println("Pres: " + String(WxForecast[r].Pressure));
-    WxForecast[r].Humidity    = hourly["humidity"];           if (print) Serial.println("Humi: " + String(WxForecast[r].Humidity));
-    WxForecast[r].DewPoint    = hourly["dew_point"];          if (print) Serial.println("DewP: " + String(WxForecast[r].DewPoint));
-    WxForecast[r].Rainfall    = hourly["rain"]["1h"];         if (print) Serial.println("Rain: " + String(WxForecast[r].Rainfall));
-    WxForecast[r].Snowfall    = hourly["snow"]["1h"];         if (print) Serial.println("Snow: " + String(WxForecast[r].Snowfall));
-    WxForecast[r].Rainfall    = hourly["rain"]["1h"];         if (print) Serial.println("Rain: " + String(WxForecast[r].Rainfall));
-    WxForecast[r].Snowfall    = hourly["snow"]["1h"];         if (print) Serial.println("Snow: " + String(WxForecast[r].Snowfall));
-    JsonObject hourly_weather = hourly["weather"][0];
-    WxForecast[r].Icon        = hourly["weather"][0]["icon"].as<const char*>(); if (print) Serial.println("Icon: " + String(WxForecast[r].Icon));
+  if (print) {
+    Serial.println("\nCurrent Reading:");
+    Serial.println("  Time: " + CurrentReading.Timestamp);
+    Serial.println("  Temp: " + String(CurrentReading.Temperature) + "C");
+    Serial.println("  Water: " + String(CurrentReading.WaterTemp) + "C");
+    Serial.println("  Pressure: " + String(CurrentReading.Pressure));
+    Serial.println("  Voltage: " + String(CurrentReading.Voltage) + "V");
   }
 
-  JsonArray daily = doc["daily"];
-  if (print) Serial.println("\nDisplaying DAILY Data --------------"); // Neded for the 7-day forecast section
-  for (int r = 0; r < 8; r++) { // Maximum of 8-days!
-    if (print) Serial.println("\nData for DAY - " + String(r) + " --------------");
-    JsonObject daily_values = daily[r];
-    Daily[r].Dt          = daily_values["dt"];                                   if (print) Serial.println(ConvertUnixTime(Daily[r].Dt));
-    Daily[r].Description = daily_values["summary"].as<const char*>();            if (print) Serial.println("Summary: " + Daily[r].Description);
-    Daily[r].Temperature = daily_values["temp"]["day"];                          if (print) Serial.println("Temp   : " + String(Daily[r].Temperature));
-    Daily[r].High        = daily_values["temp"]["max"];                          if (print) Serial.println("High   : " + String(Daily[r].High));
-    Daily[r].Low         = daily_values["temp"]["min"];                          if (print) Serial.println("Low    : " + String(Daily[r].Low));
-    Daily[r].Humidity    = daily_values["humidity"];                             if (print) Serial.println("Humi   : " + String(Daily[r].Humidity));
-    Daily[r].PoP         = daily_values["pop"];                                  if (print) Serial.println("PoP    : " + String(Daily[r].PoP*100, 0) + "%");
-    Daily[r].UVI         = daily_values["uvi"];                                  if (print) Serial.println("UVI    : " + String(Daily[r].UVI, 1));
-    Daily[r].Rainfall    = daily_values["rain"];                                 if (print) Serial.println("Rain   : " + String(Daily[r].Rainfall));
-    Daily[r].Snowfall    = daily_values["snow"];                                 if (print) Serial.println("Snow   : " + String(Daily[r].Snowfall));
-    Daily[r].Icon        = daily_values["weather"][0]["icon"].as<const char*>(); if (print) Serial.println("Icon   : " + String(Daily[r].Icon));
+  // Parse historical readings array
+  JsonArray readings = doc["readings"];
+  NumReadings = min((int)readings.size(), max_readings);
+
+  if (print) Serial.println("\nHistorical Readings (" + String(NumReadings) + "):");
+
+  for (int r = 0; r < NumReadings; r++) {
+    JsonObject reading = readings[r];
+    SiteReadings[r].Dt          = reading["dt"];
+    SiteReadings[r].Timestamp   = reading["timestamp"].as<String>();
+    SiteReadings[r].Temperature = reading["temperature"];
+    SiteReadings[r].WaterTemp   = reading["water_temp"];
+    SiteReadings[r].Pressure    = reading["pressure"];
+    SiteReadings[r].Voltage     = reading["voltage"];
+    SiteReadings[r].Counter     = reading["counter"];
+
+    if (print) {
+      Serial.println("  [" + String(r) + "] " + SiteReadings[r].Timestamp +
+                     " T:" + String(SiteReadings[r].Temperature) +
+                     " W:" + String(SiteReadings[r].WaterTemp));
+    }
   }
-  //------------------------------------------
-  float pressure_trend = WxForecast[0].Pressure - WxForecast[2].Pressure; // Measure pressure slope between ~now and later
-  pressure_trend = ((int)(pressure_trend * 10)) / 10.0; // Remove any small variations of less than 0.1
-  WxConditions[0].Trend = "=";
-  if (pressure_trend > 0)  WxConditions[0].Trend = "+";
-  if (pressure_trend < 0)  WxConditions[0].Trend = "-";
-  if (pressure_trend == 0) WxConditions[0].Trend = "0";
-  if (Units == "I") Convert_Readings_to_Imperial();
+
   return true;
-}
-
-float mm_to_inches(float value_mm){
-  return 0.0393701 * value_mm;
-}
-
-float hPa_to_inHg(float value_hPa){
-  return 0.02953 * value_hPa;
 }
 
 int JulianDate(int d, int m, int y) {
