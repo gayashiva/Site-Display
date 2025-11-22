@@ -26,20 +26,8 @@
 #define  ENABLE_GxEPD2_display 0
 #include <GxEPD2_BW.h>
 #include <GxEPD2_3C.h>
-
-// Native Adafruit GFX bold fonts for darker text
-#include <Fonts/FreeSans9pt7b.h>
-#include <Fonts/FreeSansBold9pt7b.h>
-#include <Fonts/FreeSansBold12pt7b.h>
-#include <Fonts/FreeSansBold18pt7b.h>
-#include <Fonts/FreeSansBold24pt7b.h>
+#include <U8g2_for_Adafruit_GFX.h>
 #include "lang.h"
-//#include "lang_cz.h"                // Localisation (Czech)
-//#include "lang_fr.h"                // Localisation (French)
-//#include "lang_gr.h"                // Localisation (German)
-//#include "lang_it.h"                // Localisation (Italian)
-//#include "lang_nl.h"                // Localisation (Dutch)
-//#include "lang_pl.h"                // Localisation (Polish)
 
 #define SCREEN_WIDTH  400.0    // Set for landscape mode, don't remove the decimal place!
 #define SCREEN_HEIGHT 300.0
@@ -59,6 +47,7 @@ static const uint8_t EPD_MOSI = 11; // to EPD DIN
 //GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT> display(GxEPD2_420_GDEY042T81(/*CS=D8*/ EPD_CS, /*DC=D3*/ EPD_DC, /*RST=D4*/ EPD_RST, /*BUSY=D2*/ EPD_BUSY));
 //CrowPanel
 GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT> display(GxEPD2_420_GDEY042T81(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
+U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
 
 //################  VERSION  ##########################
 String version = "12.5";     // Version of this program
@@ -90,25 +79,25 @@ int  SleepTime     = 22; // Sleep after (23+1) 00:00 to save battery power
 void setup() {
   StartTime = millis();
   Serial.begin(115200);
-  if (StartWiFi() == WL_CONNECTED && SetupTime() == true) {
-    if (CurrentHour >= WakeupTime && CurrentHour <= SleepTime ) {
-      InitialiseDisplay(); // Give screen time to initialise
-      byte Attempts = 1;
-      bool RxData = false;
-      WiFiClient client;   // wifi client object
-      while (RxData == false && Attempts <= 2) { // Try up-to 2 times for site data
-        if (RxData == false) RxData = ReceiveSiteData(client, true);
-        Attempts++;
-      }
-      if (RxData) { // Only if received site data proceed
-        StopWiFi(); // Reduces power consumption
-        DisplaySiteData();
-        // Note: display.display() is NOT needed after paged drawing -
-        // the display is already updated when nextPage() returns false
-      }
-    }
-  }
-  BeginSleep();
+  InitialiseDisplay();
+  DisplaySiteData();
+  // if (StartWiFi() == WL_CONNECTED && SetupTime() == true) {
+  //   if (CurrentHour >= WakeupTime && CurrentHour <= SleepTime ) {
+  //     InitialiseDisplay(); // Give screen time to initialise
+  //     byte Attempts = 1;
+  //     bool RxData = false;
+  //     WiFiClient client;   // wifi client object
+  //     while (RxData == false && Attempts <= 2) { // Try up-to 2 times for site data
+  //       if (RxData == false) RxData = ReceiveSiteData(client, true);
+  //       Attempts++;
+  //     }
+  //     if (RxData) { // Only if received site data proceed
+  //       StopWiFi(); // Reduces power consumption
+  //       DisplaySiteData();
+  //     }
+  //   }
+  // }
+  // BeginSleep();
 }
 //#########################################################################################
 void loop() { // this will never run!
@@ -137,19 +126,22 @@ void DisplaySiteData() {                // 4.2" e-paper display is 400x300 resol
   display.firstPage();
   do {
     display.fillScreen(GxEPD_WHITE);
-    DrawHeadingSection();
-    DrawMainDataSection(0, 17);
-    DrawGraphSection(0, 132);
+    // Simple test text
+    u8g2Fonts.setFont(u8g2_font_helvB24_tf);
+    drawString(200, 150, "TEST", CENTER);
+    // DrawHeadingSection();
+    // DrawMainDataSection(0, 17);
+    // DrawGraphSection(0, 132);
   } while (display.nextPage());
 }
 //#########################################################################################
 void DrawHeadingSection() {
   // Site name as title - larger and bolder font
-  display.setFont(&FreeSansBold12pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB12_tf);
   drawString(SCREEN_WIDTH / 2, 0, SiteName, CENTER);
 
   // Date and time with smaller font
-  display.setFont(&FreeSansBold9pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
   drawString(SCREEN_WIDTH - 5, 0, date_str, RIGHT);
   drawString(4, 0, time_str, LEFT);
   DrawBattery(65, 12);
@@ -159,49 +151,49 @@ void DrawHeadingSection() {
 void DrawMainDataSection(int x, int y) {
   // Left panel - Air Temperature with large display
   display.drawRect(x, y, 130, 110, GxEPD_BLACK);
-  display.setFont(&FreeSansBold9pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
   drawString(x + 65, y + 5, "AIR TEMP", CENTER);
   display.drawLine(x, y + 18, x + 130, y + 18, GxEPD_BLACK);
 
-  display.setFont(&FreeSansBold24pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB24_tf);
   drawString(x + 65, y + 35, String(CurrentReading.Temperature, 1) + "C", CENTER);
 
-  display.setFont(&FreeSansBold9pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB10_tf);
   drawString(x + 65, y + 75, "Water: " + String(CurrentReading.WaterTemp, 1) + "C", CENTER);
 
-  display.setFont(&FreeSansBold9pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
   drawString(x + 65, y + 95, CurrentReading.Timestamp, CENTER);
 
   // Center panel - Pressure and Voltage
   display.drawRect(x + 135, y, 130, 110, GxEPD_BLACK);
-  display.setFont(&FreeSansBold9pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
   drawString(x + 200, y + 5, "PRESSURE", CENTER);
   display.drawLine(x + 135, y + 18, x + 265, y + 18, GxEPD_BLACK);
 
-  display.setFont(&FreeSansBold18pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB18_tf);
   drawString(x + 200, y + 35, String(CurrentReading.Pressure, 2), CENTER);
 
-  display.setFont(&FreeSansBold9pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB10_tf);
   drawString(x + 200, y + 65, "Voltage: " + String(CurrentReading.Voltage, 2) + "V", CENTER);
 
-  display.setFont(&FreeSansBold9pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
   String statusStr = SiteInfo.Active ? "ACTIVE" : "OFFLINE";
   drawString(x + 200, y + 85, "Status: " + statusStr, CENTER);
   drawString(x + 200, y + 98, "Counter: " + String(CurrentReading.Counter), CENTER);
 
   // Right panel - Site info
   display.drawRect(x + 270, y, 130, 110, GxEPD_BLACK);
-  display.setFont(&FreeSansBold9pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
   drawString(x + 335, y + 5, "SITE INFO", CENTER);
   display.drawLine(x + 270, y + 18, x + 400, y + 18, GxEPD_BLACK);
 
-  display.setFont(&FreeSansBold12pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB12_tf);
   drawString(x + 335, y + 30, SiteInfo.SiteName, CENTER);
 
-  display.setFont(&FreeSansBold9pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB10_tf);
   drawString(x + 335, y + 50, "Type: " + SiteInfo.SiteType, CENTER);
 
-  display.setFont(&FreeSansBold9pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
   drawString(x + 335, y + 70, "Readings: " + String(NumReadings), CENTER);
   drawString(x + 335, y + 85, "TZ: IST (+5:30)", CENTER);
   drawString(x + 335, y + 98, "Ladakh, India", CENTER);
@@ -210,7 +202,7 @@ void DrawMainDataSection(int x, int y) {
 void DrawGraphSection(int x, int y) {
   // Title for graph section
   display.drawLine(0, y - 5, SCREEN_WIDTH, y - 5, GxEPD_BLACK);
-  display.setFont(&FreeSansBold9pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB10_tf);
   drawString(SCREEN_WIDTH / 2, y, "Historical Data (last " + String(NumReadings * 5) + " min)", CENTER);
 
   // Prepare data arrays (reverse order - oldest first for proper graph display)
@@ -358,7 +350,7 @@ void DrawGraph(int x_pos, int y_pos, int gwidth, int gheight, float Y1Min, float
   last_x = x_pos + 1;
   last_y = y_pos + (Y1Max - constrain(DataArray[1], Y1Min, Y1Max)) / (Y1Max - Y1Min) * gheight;
   display.drawRect(x_pos, y_pos, gwidth + 3, gheight + 2, GxEPD_BLACK);
-  display.setFont(&FreeSansBold9pt7b);
+  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
   drawString(x_pos + gwidth / 2, y_pos - 12, title, CENTER);
   // Draw the graph
   last_x = x_pos;
@@ -406,8 +398,8 @@ void drawString(int x, int y, String text, alignment align) {
   display.getTextBounds(text, x, y, &x1, &y1, &w, &h);
   if (align == RIGHT)  x = x - w;
   if (align == CENTER) x = x - w / 2;
-  display.setCursor(x, y + h);
-  display.print(text);
+  u8g2Fonts.setCursor(x, y + h);
+  u8g2Fonts.print(text);
 }
 //#########################################################################################
 void drawStringMaxWidth(int x, int y, unsigned int text_width, String text, alignment align) {
@@ -416,18 +408,18 @@ void drawStringMaxWidth(int x, int y, unsigned int text_width, String text, alig
   display.getTextBounds(text, x, y, &x1, &y1, &w, &h);
   if (align == RIGHT)  x = x - w;
   if (align == CENTER) x = x - w / 2;
-  display.setCursor(x, y);
+  u8g2Fonts.setCursor(x, y);
   if (text.length() > text_width * 2) {
-    display.setFont(&FreeSansBold9pt7b);
+    u8g2Fonts.setFont(u8g2_font_helvB10_tf);
     text_width = 42;
     y = y - 3;
   }
-  display.println(text.substring(0, text_width));
+  u8g2Fonts.println(text.substring(0, text_width));
   if (text.length() > text_width) {
-    display.setCursor(x, y + h + 15);
+    u8g2Fonts.setCursor(x, y + h + 15);
     String secondLine = text.substring(text_width);
     secondLine.trim(); // Remove any leading spaces
-    display.println(secondLine);
+    u8g2Fonts.println(secondLine);
   }
 }
 //#########################################################################################
@@ -436,8 +428,12 @@ void InitialiseDisplay() {
   // display.init(); for older Waveshare HAT's
   SPI.end();
   SPI.begin(EPD_SCK, EPD_MISO, EPD_MOSI, EPD_CS);
-  display.setTextColor(GxEPD_BLACK);
-  display.setFont(&FreeSansBold9pt7b);
+  u8g2Fonts.begin(display);
+  u8g2Fonts.setFontMode(1);                  // use u8g2 transparent mode (this is default)
+  u8g2Fonts.setFontDirection(0);             // left to right (this is default)
+  u8g2Fonts.setForegroundColor(GxEPD_BLACK); // apply Adafruit GFX color
+  u8g2Fonts.setBackgroundColor(GxEPD_WHITE); // apply Adafruit GFX color
+  u8g2Fonts.setFont(u8g2_font_helvB10_tf);
   display.setFullWindow();
   display.fillScreen(GxEPD_WHITE);
   display.display(true);
