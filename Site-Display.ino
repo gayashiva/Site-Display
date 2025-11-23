@@ -79,9 +79,13 @@ void DisplayWiFiError();
 //#########################################################################################
 void fetchAndDisplay() {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected");
-    DisplayWiFiError();
-    return;
+    Serial.println("WiFi not connected, reconnecting...");
+    if (StartWiFi() != WL_CONNECTED) {
+      Serial.println("WiFi reconnect failed");
+      DisplayWiFiError();
+      return;
+    }
+    Serial.println("WiFi reconnected");
   }
 
   if (SetupTime()) {
@@ -295,7 +299,10 @@ void DrawHeadingSection() {
 
   // Date on right (compact: 23-Nov)
   display.setFont(&FreeMonoBold9pt7b);
-  String shortDate = String(date_str).substring(5, 11);  // Extract day-month (23-Nov)
+  // date_str format: "Sun, 23. Nov 2025" - extract day (5-6) and month (9-11)
+  String day = String(date_str).substring(5, 7);   // "23"
+  String mon = String(date_str).substring(9, 12); // "Nov"
+  String shortDate = day + "-" + mon;              // "23-Nov"
   display.getTextBounds(shortDate, 0, 0, &x1, &y1, &w, &h);
   display.setCursor(SCREEN_WIDTH - w - 5, 18);
   display.print(shortDate);
