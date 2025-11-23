@@ -1,21 +1,6 @@
-/* ESP32 Weather Display using an EPD 4.2" Display, obtains data from Open Weather Map, decodes it and then displays it.
+/* ESP32 Site Display using an EPD 4.2" Display
   ####################################################################################################################################
-  This software, the ideas and concepts is Copyright (c) David Bird 2018. All rights to this software are reserved.
-
-  Any redistribution or reproduction of any part or all of the contents in any form is prohibited other than the following:
-  1. You may print or download to a local hard disk extracts for your personal and non-commercial use only.
-  2. You may copy the content to individual third parties for their personal use, but only if you acknowledge the author David Bird as the source of the material.
-  3. You may not, except with my express written permission, distribute or commercially exploit the content.
-  4. You may not transmit it or store it in any other website or other form of electronic retrieval system for commercial purposes.
-
-  The above copyright ('as annotated') notice and this permission notice shall be included in all copies or substantial portions of the Software and where the
-  software use is visible to an end-user.
-
-  THE SOFTWARE IS PROVIDED "AS IS" FOR PRIVATE USE ONLY, IT IS NOT FOR COMMERCIAL USE IN WHOLE OR PART OR CONCEPT. FOR PERSONAL USE IT IS SUPPLIED WITHOUT WARRANTY
-  OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-  IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-  See more at http://www.dsbird.org.uk
+  Based on code by David Bird and Mirko Pavleski
 */
 #include "credentials.h"  // WiFi credentials and Site API configuration
 #include <ArduinoJson.h>       // https://github.com/bblanchon/ArduinoJson
@@ -23,31 +8,40 @@
 #include <WiFiClientSecure.h>  // For HTTPS connections
 #include "time.h"              // Built-in
 #include <SPI.h>               // Built-in
-#define  ENABLE_GxEPD2_display 0
+#include <Preferences.h>       // For saving site selection
 #include <GxEPD2_BW.h>
-#include <GxEPD2_3C.h>
-#include <U8g2_for_Adafruit_GFX.h>
+
+Preferences prefs;
+#include <Fonts/FreeMonoBold24pt7b.h>
+#include <Fonts/FreeMonoBold18pt7b.h>
+#include <Fonts/FreeMonoBold12pt7b.h>
+#include <Fonts/FreeMonoBold9pt7b.h>
+#include <Fonts/FreeSans9pt7b.h>
 #include "lang.h"
 
-#define SCREEN_WIDTH  400.0    // Set for landscape mode, don't remove the decimal place!
-#define SCREEN_HEIGHT 300.0
+#define SCREEN_WIDTH  400
+#define SCREEN_HEIGHT 300
 
-enum alignment {LEFT, RIGHT, CENTER};
+// Pin definitions for CrowPanel
+#define PWR  7
+#define BUSY 48
+#define RES  47
+#define DC   46
+#define CS   45
 
-// Connections for CrowPanel
-static const uint8_t EPD_BUSY = 48;  // to EPD BUSY
-static const uint8_t EPD_CS   = 45;  // to EPD CS
-static const uint8_t EPD_RST  = 47; // to EPD RST
-static const uint8_t EPD_DC   = 46; // to EPD DC
-static const uint8_t EPD_SCK  = 12; // to EPD CLK
-static const uint8_t EPD_MISO = -1; // Master-In Slave-Out not used, as no data from display
-static const uint8_t EPD_MOSI = 11; // to EPD DIN
+// Rotary switch pins
+#define ROT_UP   6
+#define ROT_DOWN 4
+#define BTN_FETCH 2  // Button to fetch data
 
-// GxEPD2_BW<GxEPD2_420, GxEPD2_420::HEIGHT> display(GxEPD2_420(/*CS=D8*/ EPD_CS, /*DC=D3*/ EPD_DC, /*RST=D4*/ EPD_RST, /*BUSY=D2*/ EPD_BUSY));
-//GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT> display(GxEPD2_420_GDEY042T81(/*CS=D8*/ EPD_CS, /*DC=D3*/ EPD_DC, /*RST=D4*/ EPD_RST, /*BUSY=D2*/ EPD_BUSY));
-//CrowPanel
-GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT> display(GxEPD2_420_GDEY042T81(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
-U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
+// Site list for rotation
+const char* siteList[] = {"Sakti", "Likir", "Baroo", "Tuna", "Ayee", "Chanigund", "Stakmo", "Igoo"};
+const int numSites = 8;
+int currentSiteIndex = 0;  // Will be loaded from preferences
+bool dataLoaded = false;   // Track if data has been fetched for current site
+
+// CrowPanel EPD display
+GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT> display(GxEPD2_420_GDEY042T81(CS, DC, RES, BUSY));
 
 //################  VERSION  ##########################
 String version = "12.5";     // Version of this program
@@ -59,7 +53,7 @@ long    StartTime = 0;
 
 //################ PROGRAM VARIABLES and OBJECTS ################
 
-#define max_readings 50
+#define max_readings 72
 
 #include <common.h>
 
@@ -75,32 +69,110 @@ long SleepDuration = 1; // Sleep time in minutes, aligned to the nearest minute 
 int  WakeupTime    = 6;  // Don't wakeup until after 07:00 to save battery power
 int  SleepTime     = 22; // Sleep after (23+1) 00:00 to save battery power
 
+// Forward declarations
+uint8_t StartWiFi();
+boolean SetupTime();
+void DisplaySiteData();
+void DisplayNoData();
+void DisplayWiFiError();
+
+//#########################################################################################
+void fetchAndDisplay() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected");
+    DisplayWiFiError();
+    return;
+  }
+
+  if (SetupTime()) {
+    Serial.println("Time: " + time_str);
+    WiFiClient client;
+    bool RxData = false;
+    for (int i = 1; i <= 2 && !RxData; i++) {
+      RxData = ReceiveSiteData(client, true);
+    }
+    if (RxData) {
+      dataLoaded = true;
+      DisplaySiteData();
+    }
+  } else {
+    Serial.println("NTP failed");
+  }
+}
+
 //#########################################################################################
 void setup() {
   StartTime = millis();
   Serial.begin(115200);
-  InitialiseDisplay();
-  DisplaySiteData();
-  // if (StartWiFi() == WL_CONNECTED && SetupTime() == true) {
-  //   if (CurrentHour >= WakeupTime && CurrentHour <= SleepTime ) {
-  //     InitialiseDisplay(); // Give screen time to initialise
-  //     byte Attempts = 1;
-  //     bool RxData = false;
-  //     WiFiClient client;   // wifi client object
-  //     while (RxData == false && Attempts <= 2) { // Try up-to 2 times for site data
-  //       if (RxData == false) RxData = ReceiveSiteData(client, true);
-  //       Attempts++;
-  //     }
-  //     if (RxData) { // Only if received site data proceed
-  //       StopWiFi(); // Reduces power consumption
-  //       DisplaySiteData();
-  //     }
-  //   }
-  // }
-  // BeginSleep();
+  Serial.println("\n== Site Display ==");
+
+  // Setup input pins
+  pinMode(ROT_UP, INPUT_PULLUP);
+  pinMode(ROT_DOWN, INPUT_PULLUP);
+  pinMode(BTN_FETCH, INPUT_PULLUP);
+
+  // Load saved site index
+  prefs.begin("site", false);
+  currentSiteIndex = prefs.getInt("index", 0);
+  prefs.end();
+
+  // Update SiteName from list
+  SiteName = siteList[currentSiteIndex];
+  Serial.println("Site: " + SiteName);
+
+  // Connect to WiFi at startup
+  if (StartWiFi() == WL_CONNECTED) {
+    Serial.println("WiFi connected");
+    DisplayNoData();
+  } else {
+    DisplayWiFiError();
+  }
 }
 //#########################################################################################
-void loop() { // this will never run!
+void loop() {
+  // Check rotary switch for site change
+  bool siteChanged = false;
+
+  if (digitalRead(ROT_UP) == LOW) {
+    delay(50);  // Debounce
+    if (digitalRead(ROT_UP) == LOW) {
+      currentSiteIndex = (currentSiteIndex + 1) % numSites;
+      siteChanged = true;
+      while (digitalRead(ROT_UP) == LOW) delay(10);  // Wait for release
+    }
+  }
+
+  if (digitalRead(ROT_DOWN) == LOW) {
+    delay(50);  // Debounce
+    if (digitalRead(ROT_DOWN) == LOW) {
+      currentSiteIndex = (currentSiteIndex - 1 + numSites) % numSites;
+      siteChanged = true;
+      while (digitalRead(ROT_DOWN) == LOW) delay(10);  // Wait for release
+    }
+  }
+
+  // If site changed, save and update display
+  if (siteChanged) {
+    SiteName = siteList[currentSiteIndex];
+    dataLoaded = false;  // Reset data loaded flag
+    prefs.begin("site", false);
+    prefs.putInt("index", currentSiteIndex);
+    prefs.end();
+    Serial.println("Site: " + SiteName);
+    DisplayNoData();  // Show placeholder screen
+  }
+
+  // Check fetch button
+  if (digitalRead(BTN_FETCH) == LOW) {
+    delay(50);  // Debounce
+    if (digitalRead(BTN_FETCH) == LOW) {
+      Serial.println("Fetching data...");
+      while (digitalRead(BTN_FETCH) == LOW) delay(10);  // Wait for release
+      fetchAndDisplay();
+    }
+  }
+
+  delay(100);  // Small delay to prevent CPU hogging
 }
 //#########################################################################################
 void BeginSleep() {
@@ -122,88 +194,173 @@ void BeginSleep() {
 }
 //#########################################################################################
 void DisplaySiteData() {                // 4.2" e-paper display is 400x300 resolution
-  display.setFullWindow();
-  display.firstPage();
-  do {
-    display.fillScreen(GxEPD_WHITE);
-    // Simple test text
-    u8g2Fonts.setFont(u8g2_font_helvB24_tf);
-    drawString(200, 150, "TEST", CENTER);
-    // DrawHeadingSection();
-    // DrawMainDataSection(0, 17);
-    // DrawGraphSection(0, 132);
-  } while (display.nextPage());
+  epdPower(HIGH);
+  display.init(115200, true, 50, false);
+  display.setRotation(0);
+
+  display.fillScreen(GxEPD_WHITE);
+  display.setTextColor(GxEPD_BLACK);
+
+  // Draw all sections
+  DrawHeadingSection();
+  DrawMainDataSection(0, 32);
+  DrawGraphSection(0, 150);
+
+  display.display();
+  display.hibernate();
+  epdPower(LOW);
+}
+//#########################################################################################
+void DisplayNoData() {                  // Show placeholder when no data loaded
+  epdPower(HIGH);
+  display.init(115200, true, 50, false);
+  display.setRotation(0);
+
+  display.fillScreen(GxEPD_WHITE);
+  display.setTextColor(GxEPD_BLACK);
+
+  // Draw header with site name
+  DrawHeadingSection();
+
+  // Show "Press button to fetch data" message
+  display.setFont(&FreeMonoBold12pt7b);
+  int16_t x1, y1;
+  uint16_t w, h;
+  String msg = "Press button to";
+  display.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor((SCREEN_WIDTH - w) / 2, 130);
+  display.print(msg);
+
+  msg = "fetch data";
+  display.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor((SCREEN_WIDTH - w) / 2, 160);
+  display.print(msg);
+
+  display.display();
+  display.hibernate();
+  epdPower(LOW);
+}
+//#########################################################################################
+void DisplayWiFiError() {              // Show WiFi connection error
+  epdPower(HIGH);
+  display.init(115200, true, 50, false);
+  display.setRotation(0);
+
+  display.fillScreen(GxEPD_WHITE);
+  display.setTextColor(GxEPD_BLACK);
+
+  // Draw header with site name
+  DrawHeadingSection();
+
+  // Show WiFi error message
+  display.setFont(&FreeMonoBold12pt7b);
+  int16_t x1, y1;
+  uint16_t w, h;
+  String msg = "WiFi Error";
+  display.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor((SCREEN_WIDTH - w) / 2, 120);
+  display.print(msg);
+
+  msg = "Connect to:";
+  display.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor((SCREEN_WIDTH - w) / 2, 150);
+  display.print(msg);
+
+  display.setFont(&FreeMonoBold18pt7b);
+  msg = String(ssid);
+  display.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor((SCREEN_WIDTH - w) / 2, 190);
+  display.print(msg);
+
+  display.display();
+  display.hibernate();
+  epdPower(LOW);
 }
 //#########################################################################################
 void DrawHeadingSection() {
-  // Site name as title - larger and bolder font
-  u8g2Fonts.setFont(u8g2_font_helvB12_tf);
-  drawString(SCREEN_WIDTH / 2, 0, SiteName, CENTER);
+  // Time on left (HH:MM format)
+  display.setFont(&FreeMonoBold9pt7b);
+  String shortTime = time_str.substring(0, 5);  // Just HH:MM
+  display.setCursor(5, 18);
+  display.print(shortTime);
 
-  // Date and time with smaller font
-  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
-  drawString(SCREEN_WIDTH - 5, 0, date_str, RIGHT);
-  drawString(4, 0, time_str, LEFT);
-  DrawBattery(65, 12);
-  display.drawLine(0, 14, SCREEN_WIDTH, 14, GxEPD_BLACK);
+  // Site name centered (Sakti, Ladakh)
+  display.setFont(&FreeMonoBold12pt7b);
+  String title = SiteName + ", Ladakh";
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(title, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor((SCREEN_WIDTH - w) / 2, 18);
+  display.print(title);
+
+  // Date on right (compact: 23-Nov)
+  display.setFont(&FreeMonoBold9pt7b);
+  String shortDate = String(date_str).substring(5, 11);  // Extract day-month (23-Nov)
+  display.getTextBounds(shortDate, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor(SCREEN_WIDTH - w - 5, 18);
+  display.print(shortDate);
+
+  display.drawLine(0, 26, SCREEN_WIDTH, 26, GxEPD_BLACK);
 }
 //#########################################################################################
 void DrawMainDataSection(int x, int y) {
-  // Left panel - Air Temperature with large display
-  display.drawRect(x, y, 130, 110, GxEPD_BLACK);
-  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
-  drawString(x + 65, y + 5, "AIR TEMP", CENTER);
-  display.drawLine(x, y + 18, x + 130, y + 18, GxEPD_BLACK);
+  int panelW = 133;
+  int panelH = 110;
 
-  u8g2Fonts.setFont(u8g2_font_helvB24_tf);
-  drawString(x + 65, y + 35, String(CurrentReading.Temperature, 1) + "C", CENTER);
+  // LEFT PANEL - Site Info
+  display.drawRect(x, y, panelW, panelH, GxEPD_BLACK);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(x + 20, y + 15);
+  display.print("SITE INFO");
+  display.drawLine(x, y + 20, x + panelW, y + 20, GxEPD_BLACK);
 
-  u8g2Fonts.setFont(u8g2_font_helvB10_tf);
-  drawString(x + 65, y + 75, "Water: " + String(CurrentReading.WaterTemp, 1) + "C", CENTER);
+  display.setFont(&FreeMonoBold12pt7b);
+  display.setCursor(x + 10, y + 50);
+  display.print(SiteInfo.SiteName);
 
-  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
-  drawString(x + 65, y + 95, CurrentReading.Timestamp, CENTER);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(x + 10, y + 80);
+  display.print("Readings:" + String(NumReadings));
 
-  // Center panel - Pressure and Voltage
-  display.drawRect(x + 135, y, 130, 110, GxEPD_BLACK);
-  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
-  drawString(x + 200, y + 5, "PRESSURE", CENTER);
-  display.drawLine(x + 135, y + 18, x + 265, y + 18, GxEPD_BLACK);
+  // CENTER PANEL - Air Temperature
+  int cx = x + panelW + 1;
+  display.drawRect(cx, y, panelW, panelH, GxEPD_BLACK);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(cx + 25, y + 15);
+  display.print("AIR TEMP");
+  display.drawLine(cx, y + 20, cx + panelW, y + 20, GxEPD_BLACK);
 
-  u8g2Fonts.setFont(u8g2_font_helvB18_tf);
-  drawString(x + 200, y + 35, String(CurrentReading.Pressure, 2), CENTER);
+  display.setFont(&FreeMonoBold18pt7b);
+  display.setCursor(cx + 10, y + 55);
+  display.print(String(CurrentReading.Temperature, 1) + "C");
 
-  u8g2Fonts.setFont(u8g2_font_helvB10_tf);
-  drawString(x + 200, y + 65, "Voltage: " + String(CurrentReading.Voltage, 2) + "V", CENTER);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(cx + 10, y + 85);
+  display.print("Water:" + String(CurrentReading.WaterTemp, 1) + "C");
 
-  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
-  String statusStr = SiteInfo.Active ? "ACTIVE" : "OFFLINE";
-  drawString(x + 200, y + 85, "Status: " + statusStr, CENTER);
-  drawString(x + 200, y + 98, "Counter: " + String(CurrentReading.Counter), CENTER);
+  // RIGHT PANEL - Pressure
+  int rx = cx + panelW + 1;
+  display.drawRect(rx, y, panelW, panelH, GxEPD_BLACK);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(rx + 25, y + 15);
+  display.print("PRESSURE");
+  display.drawLine(rx, y + 20, rx + panelW, y + 20, GxEPD_BLACK);
 
-  // Right panel - Site info
-  display.drawRect(x + 270, y, 130, 110, GxEPD_BLACK);
-  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
-  drawString(x + 335, y + 5, "SITE INFO", CENTER);
-  display.drawLine(x + 270, y + 18, x + 400, y + 18, GxEPD_BLACK);
+  display.setFont(&FreeMonoBold18pt7b);
+  display.setCursor(rx + 10, y + 55);
+  display.print(String(CurrentReading.Pressure, 2));
 
-  u8g2Fonts.setFont(u8g2_font_helvB12_tf);
-  drawString(x + 335, y + 30, SiteInfo.SiteName, CENTER);
-
-  u8g2Fonts.setFont(u8g2_font_helvB10_tf);
-  drawString(x + 335, y + 50, "Type: " + SiteInfo.SiteType, CENTER);
-
-  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
-  drawString(x + 335, y + 70, "Readings: " + String(NumReadings), CENTER);
-  drawString(x + 335, y + 85, "TZ: IST (+5:30)", CENTER);
-  drawString(x + 335, y + 98, "Ladakh, India", CENTER);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(rx + 10, y + 85);
+  display.print("Count:" + String(CurrentReading.Counter));
 }
 //#########################################################################################
 void DrawGraphSection(int x, int y) {
-  // Title for graph section
-  display.drawLine(0, y - 5, SCREEN_WIDTH, y - 5, GxEPD_BLACK);
-  u8g2Fonts.setFont(u8g2_font_helvB10_tf);
-  drawString(SCREEN_WIDTH / 2, y, "Historical Data (last " + String(NumReadings * 5) + " min)", CENTER);
+  // Section title
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(120, y + 12);
+  display.print("HISTORY (6 hrs)");
+  display.drawLine(0, y + 18, SCREEN_WIDTH, y + 18, GxEPD_BLACK);
 
   // Prepare data arrays (reverse order - oldest first for proper graph display)
   float water_temp_readings[max_readings];
@@ -214,13 +371,13 @@ void DrawGraphSection(int x, int y) {
   }
 
   // Draw 3 graphs side by side
-  int graph_y = y + 15;
-  int graph_h = 70;
-  int graph_w = 100;
+  int graph_y = y + 35;
+  int graph_h = 110;
+  int graph_w = 120;
 
-  DrawGraph(x + 30, graph_y, graph_w, graph_h, -10, 10, "Air Temp (C)", temperature_readings, NumReadings, autoscale_on, barchart_off);
-  DrawGraph(x + 165, graph_y, graph_w, graph_h, 0, 10, "Water Temp (C)", water_temp_readings, NumReadings, autoscale_on, barchart_off);
-  DrawGraph(x + 300, graph_y, graph_w, graph_h, 0, 2, "Pressure", pressure_readings, NumReadings, autoscale_on, barchart_off);
+  DrawGraph(x + 10, graph_y, graph_w, graph_h, -10, 10, "Air", temperature_readings, NumReadings, autoscale_on, barchart_off);
+  DrawGraph(x + 140, graph_y, graph_w, graph_h, 0, 10, "Water", water_temp_readings, NumReadings, autoscale_on, barchart_off);
+  DrawGraph(x + 270, graph_y, graph_w, graph_h, 0, 2, "Pressure", pressure_readings, NumReadings, autoscale_on, barchart_off);
 }
 //#########################################################################################
 uint8_t StartWiFi() {
@@ -256,10 +413,10 @@ void StopWiFi() {
 }
 //#########################################################################################
 boolean SetupTime() {
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer, "time.nist.gov"); //(gmtOffset_sec, daylightOffset_sec, ntpServer)
-  setenv("TZ", Timezone, 1);  //setenv()adds the "TZ" variable to the environment with a value TimeZone, only used if set to 1, 0 means no change
-  tzset(); // Set the TZ environment variable
-  delay(100);
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer, "time.cloudflare.com");
+  setenv("TZ", Timezone, 1);
+  tzset();
+  delay(1000);  // Give NTP time to sync after WiFi connection
   bool TimeStatus = UpdateLocalTime();
   return TimeStatus;
 }
@@ -276,14 +433,8 @@ boolean UpdateLocalTime() {
   CurrentSec  = timeinfo.tm_sec;
   //See http://www.cplusplus.com/reference/ctime/strftime/
   //Serial.println(&timeinfo, "%a %b %d %Y   %H:%M:%S"); // Displays: Saturday, June 24 2017 14:05:49
-  if (Units == "M") {
-    if ((Language == "CZ") || (Language == "DE") || (Language == "NL") || (Language == "PL")) {
-      sprintf(day_output, "%s, %02u. %s %04u", weekday_D[timeinfo.tm_wday], timeinfo.tm_mday, month_M[timeinfo.tm_mon], (timeinfo.tm_year) + 1900); // day_output >> So., 23. Juni 2019 <<
-    }
-    else
-    {
-      sprintf(day_output, "%s  %02u-%s-%04u", weekday_D[timeinfo.tm_wday], timeinfo.tm_mday, month_M[timeinfo.tm_mon], (timeinfo.tm_year) + 1900);
-    }
+     sprintf(day_output, "%s  %02u-%s-%04u", weekday_D[timeinfo.tm_wday], timeinfo.tm_mday, month_M[timeinfo.tm_mon], (timeinfo.tm_year) + 1900);
+    
     strftime(update_time, sizeof(update_time), "%H:%M:%S", &timeinfo);  // Creates: '@ 14:05:49'   and change from 30 to 8 <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
     sprintf(time_output, "%s", update_time);
   }
@@ -309,8 +460,9 @@ void DrawBattery(int x, int y) {
     display.drawRect(x + 15, y - 12, 19, 10, GxEPD_BLACK);
     display.fillRect(x + 34, y - 10, 2, 5, GxEPD_BLACK);
     display.fillRect(x + 17, y - 10, 15 * percentage / 100.0, 6, GxEPD_BLACK);
-    drawString(x + 65, y - 11, String(percentage) + "%", RIGHT);
-    //drawString(x + 13, y + 5,  String(voltage, 2) + "v", CENTER);
+    display.setFont(&FreeMonoBold12pt7b);
+    display.setCursor(x + 40, y);
+    display.print(String(percentage) + "%");
   }
 }
 //#########################################################################################
@@ -335,128 +487,67 @@ void DrawGraph(int x_pos, int y_pos, int gwidth, int gheight, float Y1Min, float
   float maxYscale = -10000;
   float minYscale =  10000;
   int last_x, last_y;
-  float x1, y1, x2, y2;
+  float x2, y2;
   if (auto_scale == true) {
     for (int i = 1; i < readings; i++ ) {
       if (DataArray[i] >= maxYscale) maxYscale = DataArray[i];
       if (DataArray[i] <= minYscale) minYscale = DataArray[i];
     }
-    maxYscale = round(maxYscale + auto_scale_margin); // Auto scale the graph and round to the nearest value defined, default was Y1Max
+    maxYscale = round(maxYscale + auto_scale_margin);
     Y1Max = round(maxYscale + 0.5);
-    if (minYscale != 0) minYscale = round(minYscale - auto_scale_margin); // Auto scale the graph and round to the nearest value defined, default was Y1Min
+    if (minYscale != 0) minYscale = round(minYscale - auto_scale_margin);
     Y1Min = round(minYscale);
   }
-  // Draw the graph
-  last_x = x_pos + 1;
-  last_y = y_pos + (Y1Max - constrain(DataArray[1], Y1Min, Y1Max)) / (Y1Max - Y1Min) * gheight;
+  // Draw the graph frame and title
   display.drawRect(x_pos, y_pos, gwidth + 3, gheight + 2, GxEPD_BLACK);
-  u8g2Fonts.setFont(u8g2_font_helvB08_tf);
-  drawString(x_pos + gwidth / 2, y_pos - 12, title, CENTER);
-  // Draw the graph
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(x_pos + 30, y_pos - 5);
+  display.print(title);
+
+  // Initialize starting point
   last_x = x_pos;
-  last_y = y_pos + (Y1Max - constrain(DataArray[1], Y1Min, Y1Max)) / (Y1Max - Y1Min) * gheight;
-  display.drawRect(x_pos, y_pos, gwidth + 3, gheight + 2, GxEPD_BLACK);
-  drawString(x_pos + gwidth / 2, y_pos - 13, title, CENTER);
+  last_y = y_pos + (Y1Max - constrain(DataArray[0], Y1Min, Y1Max)) / (Y1Max - Y1Min) * gheight;
+
   // Draw the data
   for (int gx = 0; gx < readings; gx++) {
     y2 = y_pos + (Y1Max - constrain(DataArray[gx], Y1Min, Y1Max)) / (Y1Max - Y1Min) * gheight + 1;
     if (barchart_mode) {
       x2 = x_pos + gx * (gwidth / readings) + 2;
       display.fillRect(x2, y2, (gwidth / readings) - 2, y_pos + gheight - y2 + 2, GxEPD_BLACK);
-    } 
-    else
-    {
-      x2 = x_pos + gx * gwidth / (readings - 1) + 1; // max_readings is the global variable that sets the maximum data that can be plotted
+    }
+    else {
+      x2 = x_pos + gx * gwidth / (readings - 1) + 1;
       display.drawLine(last_x, last_y, x2, y2, GxEPD_BLACK);
     }
     last_x = x2;
     last_y = y2;
   }
-  //Draw the Y-axis scale
+
+  // Draw dashed grid lines
 #define number_of_dashes 15
   for (int spacing = 0; spacing <= y_minor_axis; spacing++) {
-    for (int j = 0; j < number_of_dashes; j++) { // Draw dashed graph grid lines
-      if (spacing < y_minor_axis) display.drawFastHLine((x_pos + 3 + j * gwidth / number_of_dashes), y_pos + (gheight * spacing / y_minor_axis), gwidth / (2 * number_of_dashes), GxEPD_BLACK);
-    }
-    if ((Y1Max - (float)(Y1Max - Y1Min) / y_minor_axis * spacing) < 5) {
-      drawString(x_pos, y_pos + gheight * spacing / y_minor_axis - 5, String((Y1Max - (float)(Y1Max - Y1Min) / y_minor_axis * spacing + 0.01), 1), RIGHT);
-    }
-    else
-    {
-      if (Y1Min < 1 && Y1Max < 10)
-        drawString(x_pos - 3, y_pos + gheight * spacing / y_minor_axis - 5, String((Y1Max - (float)(Y1Max - Y1Min) / y_minor_axis * spacing + 0.01), 1), RIGHT);
-      else
-        drawString(x_pos - 3, y_pos + gheight * spacing / y_minor_axis - 5, String((Y1Max - (float)(Y1Max - Y1Min) / y_minor_axis * spacing + 0.01), 0), RIGHT);
+    for (int j = 0; j < number_of_dashes; j++) {
+      if (spacing < y_minor_axis)
+        display.drawFastHLine((x_pos + 3 + j * gwidth / number_of_dashes), y_pos + (gheight * spacing / y_minor_axis), gwidth / (2 * number_of_dashes), GxEPD_BLACK);
     }
   }
+
+  // Display min and max values
+  display.setFont(&FreeSans9pt7b);
+  display.setCursor(x_pos + 2, y_pos + 12);
+  display.print(String(Y1Max, 1));
+  display.setCursor(x_pos + 2, y_pos + gheight - 2);
+  display.print(String(Y1Min, 1));
 }
 //#########################################################################################
-void drawString(int x, int y, String text, alignment align) {
-  int16_t  x1, y1; //the bounds of x,y and w and h of the variable 'text' in pixels.
-  uint16_t w, h;
-  display.setTextWrap(false);
-  display.getTextBounds(text, x, y, &x1, &y1, &w, &h);
-  if (align == RIGHT)  x = x - w;
-  if (align == CENTER) x = x - w / 2;
-  u8g2Fonts.setCursor(x, y + h);
-  u8g2Fonts.print(text);
-}
-//#########################################################################################
-void drawStringMaxWidth(int x, int y, unsigned int text_width, String text, alignment align) {
-  int16_t  x1, y1; //the bounds of x,y and w and h of the variable 'text' in pixels.
-  uint16_t w, h;
-  display.getTextBounds(text, x, y, &x1, &y1, &w, &h);
-  if (align == RIGHT)  x = x - w;
-  if (align == CENTER) x = x - w / 2;
-  u8g2Fonts.setCursor(x, y);
-  if (text.length() > text_width * 2) {
-    u8g2Fonts.setFont(u8g2_font_helvB10_tf);
-    text_width = 42;
-    y = y - 3;
-  }
-  u8g2Fonts.println(text.substring(0, text_width));
-  if (text.length() > text_width) {
-    u8g2Fonts.setCursor(x, y + h + 15);
-    String secondLine = text.substring(text_width);
-    secondLine.trim(); // Remove any leading spaces
-    u8g2Fonts.println(secondLine);
-  }
+void epdPower(int state) {
+  pinMode(PWR, OUTPUT);
+  digitalWrite(PWR, state);
 }
 //#########################################################################################
 void InitialiseDisplay() {
+  epdPower(HIGH);
   display.init(115200, true, 50, false);
-  // display.init(); for older Waveshare HAT's
-  SPI.end();
-  SPI.begin(EPD_SCK, EPD_MISO, EPD_MOSI, EPD_CS);
-  u8g2Fonts.begin(display);
-  u8g2Fonts.setFontMode(1);                  // use u8g2 transparent mode (this is default)
-  u8g2Fonts.setFontDirection(0);             // left to right (this is default)
-  u8g2Fonts.setForegroundColor(GxEPD_BLACK); // apply Adafruit GFX color
-  u8g2Fonts.setBackgroundColor(GxEPD_WHITE); // apply Adafruit GFX color
-  u8g2Fonts.setFont(u8g2_font_helvB10_tf);
-  display.setFullWindow();
-  display.fillScreen(GxEPD_WHITE);
-  display.display(true);
-  delay(200);
+  display.setRotation(0);
+  display.setTextColor(GxEPD_BLACK);
 }
-/*
-  Version 12.0 reformatted to use u8g2 fonts
-  1.  Screen layout revised
-  2.  Made consitent with other versions specifically 7x5 variant
-  3.  Introduced Visibility in Metres, Cloud cover in % and RH in %
-  4.  Correct sunrise/sunset time when in imperial mode.
-
-  Version 12.1 Clarified Waveshare ESP32 driver board connections
-
-  Version 12.2 Changed GxEPD2 initialisation from 115200 to 0
-  1.  display.init(115200); becomes display.init(0); to stop blank screen following update to GxEPD2
-
-  Version 12.3
-  1. Added 20-secs to allow for slow ESP32 RTC timers
-  
-  Version 12.4
-  1. Improved graph drawing function for negative numbers Line 808
-  
-  Version 12.5
-  1. Modified for GxEPD2 changes
-*/

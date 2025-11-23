@@ -42,38 +42,26 @@ String ConvertUnixTime(int unix_time) {
   time_t tm = unix_time;
   struct tm *now_tm = gmtime(&tm);
   char output[40];
-  if (Units == "M") {
-    strftime(output, sizeof(output), "%H:%M %d/%m/%y", now_tm);
-  }
-  else {
-    strftime(output, sizeof(output), "%I:%M%P %m/%d/%y", now_tm);
-  }
+  strftime(output, sizeof(output), "%H:%M %d/%m/%y", now_tm);
   return output;
 }
 //#########################################################################################
 // Fetch data from Site Data API (HTTPS)
 bool ReceiveSiteData(WiFiClient& client, bool print) {
-  Serial.println("Fetching site data...");
-  client.stop(); // close connection before sending a new request
+  client.stop();
   HTTPClient http;
 
-  // Build the API URL - use HTTPS (port 443)
   String url = "https://" + String(server) + "/prod/site?site_name=" + SiteName + "&count=" + String(ReadingCount);
-  Serial.println("URL: " + url);
-
   http.begin(url);
   int httpCode = http.GET();
 
   if(httpCode == HTTP_CODE_OK) {
     String payload = http.getString();
-    if (print) Serial.println("Response: " + payload);
 
-    // Parse JSON from string
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload);
     if (error) {
-      Serial.print("deserializeJson() failed: ");
-      Serial.println(error.c_str());
+      Serial.println("JSON parse error: " + String(error.c_str()));
       http.end();
       return false;
     }
@@ -86,28 +74,19 @@ bool ReceiveSiteData(WiFiClient& client, bool print) {
     return true;
   }
   else {
-    Serial.printf("Connection failed, HTTP code: %d, error: %s\n", httpCode, http.errorToString(httpCode).c_str());
+    Serial.println("HTTP error: " + String(httpCode));
     http.end();
     return false;
   }
 }
 //#######################################################################################
 bool DecodeSiteData(JsonDocument& doc, bool print) {
-  if (print) Serial.println("Decoding Site Data...");
-
   // Parse site metadata
   SiteInfo.SiteName       = doc["site_name"].as<String>();
   SiteInfo.SiteType       = doc["site_type"].as<String>();
   SiteInfo.Active         = doc["active"];
   SiteInfo.TimezoneOffset = doc["timezone_offset"];
   SiteInfo.QueryTime      = doc["query_time"];
-
-  if (print) {
-    Serial.println("Site: " + SiteInfo.SiteName);
-    Serial.println("Type: " + SiteInfo.SiteType);
-    Serial.println("Active: " + String(SiteInfo.Active));
-    Serial.println("TZ Offset: " + String(SiteInfo.TimezoneOffset));
-  }
 
   // Parse current reading
   JsonObject current = doc["current"];
@@ -119,20 +98,9 @@ bool DecodeSiteData(JsonDocument& doc, bool print) {
   CurrentReading.Voltage     = current["voltage"];
   CurrentReading.Counter     = current["counter"];
 
-  if (print) {
-    Serial.println("\nCurrent Reading:");
-    Serial.println("  Time: " + CurrentReading.Timestamp);
-    Serial.println("  Temp: " + String(CurrentReading.Temperature) + "C");
-    Serial.println("  Water: " + String(CurrentReading.WaterTemp) + "C");
-    Serial.println("  Pressure: " + String(CurrentReading.Pressure));
-    Serial.println("  Voltage: " + String(CurrentReading.Voltage) + "V");
-  }
-
   // Parse historical readings array
   JsonArray readings = doc["readings"];
   NumReadings = min((int)readings.size(), max_readings);
-
-  if (print) Serial.println("\nHistorical Readings (" + String(NumReadings) + "):");
 
   for (int r = 0; r < NumReadings; r++) {
     JsonObject reading = readings[r];
@@ -143,12 +111,11 @@ bool DecodeSiteData(JsonDocument& doc, bool print) {
     SiteReadings[r].Pressure    = reading["pressure"];
     SiteReadings[r].Voltage     = reading["voltage"];
     SiteReadings[r].Counter     = reading["counter"];
+  }
 
-    if (print) {
-      Serial.println("  [" + String(r) + "] " + SiteReadings[r].Timestamp +
-                     " T:" + String(SiteReadings[r].Temperature) +
-                     " W:" + String(SiteReadings[r].WaterTemp));
-    }
+  if (print) {
+    Serial.println("Site: " + SiteInfo.SiteName + " | Readings: " + String(NumReadings) +
+                   " | Current: " + String(CurrentReading.Temperature, 1) + "C");
   }
 
   return true;
@@ -191,5 +158,3 @@ double NormalizedMoonPhase(int d, int m, int y) {
   double Phase = (j + 4.867) / 29.53059;
   return (Phase - (int) Phase);
 }
-
-
