@@ -1,0 +1,22 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "wifi_manager.c"
+        "http_client.c"
+        "site_data.c"
+        "nvs_storage.c"
+        "display.cpp"
+    INCLUDE_DIRS "."
+    REQUIRES
+        driver
+        esp_wifi
+        esp_http_client
+        nvs_flash
+        json
+        esp_timer
+        esp_event
+        esp_netif
+        bb_epaper
+    PRIV_REQUIRES
+        mbedtls
+)

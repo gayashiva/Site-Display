@@ -1,0 +1,152 @@
+menu "Site Display Configuration"
+
+    menu "WiFi Configuration"
+        config WIFI_SSID
+            string "WiFi SSID"
+            default "Surya12"
+            help
+                SSID (network name) to connect to.
+
+        config WIFI_PASSWORD
+            string "WiFi Password"
+            default "Icestupa"
+            help
+                WiFi password (WPA or WPA2).
+
+        config WIFI_MAXIMUM_RETRY
+            int "Maximum retry"
+            default 5
+            help
+                Set the maximum retry attempts to connect to WiFi.
+    endmenu
+
+    menu "Site Data API Configuration"
+        config SITE_API_SERVER
+            string "API Server Hostname"
+            default "hxdp2vraz0.execute-api.us-east-1.amazonaws.com"
+            help
+                Hostname of the Site Data API server.
+
+        config SITE_API_PATH
+            string "API Path"
+            default "/prod/site"
+            help
+                API endpoint path.
+
+        config SITE_READING_COUNT
+            int "Number of historical readings"
+            default 288
+            help
+                Number of historical readings to fetch (288 = 24 hours at 5min intervals).
+
+        config DEFAULT_SITE_INDEX
+            int "Default site index"
+            default 0
+            range 0 7
+            help
+                Default site index (0=Sakti, 1=Likir, 2=Baroo, 3=Tuna, 4=Ayee, 5=Chanigund, 6=Stakmo, 7=Igoo).
+    endmenu
+
+    menu "Time Configuration"
+        config NTP_SERVER
+            string "NTP Server"
+            default "time.google.com"
+            help
+                NTP server for time synchronization.
+
+        config TIMEZONE
+            string "Timezone"
+            default "IST-5:30"
+            help
+                POSIX timezone string. See https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv
+
+        config GMT_OFFSET_SEC
+            int "GMT Offset (seconds)"
+            default 19800
+            help
+                GMT offset in seconds (IST = 19800).
+
+        config DAYLIGHT_OFFSET_SEC
+            int "Daylight Saving Offset (seconds)"
+            default 0
+            help
+                Daylight saving offset in seconds.
+    endmenu
+
+    menu "Display Configuration"
+        config SCREEN_WIDTH
+            int "Screen Width"
+            default 400
+            help
+                E-paper display width in pixels.
+
+        config SCREEN_HEIGHT
+            int "Screen Height"
+            default 300
+            help
+                E-paper display height in pixels.
+    endmenu
+
+    menu "GPIO Pin Configuration (CrowPanel ESP32-S3)"
+        config EPD_PWR_PIN
+            int "EPD Power Pin"
+            default 7
+            help
+                GPIO pin for e-paper power control.
+
+        config EPD_BUSY_PIN
+            int "EPD Busy Pin"
+            default 48
+            help
+                GPIO pin for e-paper busy signal.
+
+        config EPD_RST_PIN
+            int "EPD Reset Pin"
+            default 47
+            help
+                GPIO pin for e-paper reset.
+
+        config EPD_DC_PIN
+            int "EPD DC Pin"
+            default 46
+            help
+                GPIO pin for e-paper data/command.
+
+        config EPD_CS_PIN
+            int "EPD CS Pin"
+            default 45
+            help
+                GPIO pin for e-paper chip select.
+
+        config EPD_SCK_PIN
+            int "EPD SCK Pin"
+            default 12
+            help
+                GPIO pin for SPI clock.
+
+        config EPD_MOSI_PIN
+            int "EPD MOSI Pin"
+            default 11
+            help
+                GPIO pin for SPI MOSI.
+
+        config ROT_UP_PIN
+            int "Rotary Up Pin"
+            default 6
+            help
+                GPIO pin for rotary switch up.
+
+        config ROT_DOWN_PIN
+            int "Rotary Down Pin"
+            default 4
+            help
+                GPIO pin for rotary switch down.
+
+        config BTN_FETCH_PIN
+            int "Fetch Button Pin"
+            default 2
+            help
+                GPIO pin for fetch data button.
+    endmenu
+
+endmenu
