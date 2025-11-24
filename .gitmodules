@@ -1,0 +1,3 @@
+[submodule "esp-idf/components/epd_driver"]
+	path = esp-idf/components/epd_driver
+	url = https://github.com/martinberlin/epdiy-rotation.git
