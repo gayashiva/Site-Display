@@ -113,7 +113,7 @@ bool fetch_site_data(const char* site_name, int count, bool print)
         int status_code = esp_http_client_get_status_code(client);
         int content_length = esp_http_client_get_content_length(client);
 
-        ESP_LOGI(TAG, "HTTP Status = %d, Content-Length = %d",
+        ESP_LOGD(TAG, "HTTP Status = %d, Content-Length = %d",
                  status_code, content_length);
 
         if (status_code == 200 && s_response_len > 0) {
@@ -124,7 +124,7 @@ bool fetch_site_data(const char* site_name, int count, bool print)
             // Parse JSON response
             success = parse_site_data(s_response_buffer, print);
             if (success) {
-                ESP_LOGI(TAG, "Data parsed successfully");
+                ESP_LOGD(TAG, "Data parsed successfully");
             } else {
                 ESP_LOGE(TAG, "Failed to parse JSON response");
             }

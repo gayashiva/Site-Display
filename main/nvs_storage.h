@@ -28,4 +28,16 @@ esp_err_t nvs_save_site_index(int index);
  */
 esp_err_t nvs_load_site_index(int* index);
 
+/**
+ * @brief Check if first boot flag is set
+ * @return true if first boot, false otherwise
+ */
+bool nvs_is_first_boot(void);
+
+/**
+ * @brief Clear first boot flag
+ * @return ESP_OK on success
+ */
+esp_err_t nvs_clear_first_boot(void);
+
 #endif // NVS_STORAGE_H

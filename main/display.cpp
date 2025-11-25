@@ -54,7 +54,7 @@ static BBEPAPER* epd = nullptr;
 static void draw_heading_section(void);
 static void draw_graph_section(int x, int y);
 static void epd_power_control(bool on);
-static void draw_string_centered(const char* text, int y, const uint8_t* font);
+static void draw_common_x_axis(int x_pos, int y_pos, int width);
 
 static void epd_power_control(bool on)
 {
@@ -74,16 +74,6 @@ static void epd_power_control(bool on)
     if (on) {
         vTaskDelay(pdMS_TO_TICKS(100));  // Wait for power to stabilize
     }
-}
-
-// Helper to draw centered text using custom font
-static void draw_string_centered(const char* text, int y, const uint8_t* font)
-{
-    BB_RECT rect;
-    epd->setFont(font);
-    epd->getStringBox(text, &rect);
-    int x = (SCREEN_WIDTH - rect.w) / 2;
-    epd->drawString(text, x, y);
 }
 
 extern "C" void display_init(void)
@@ -115,7 +105,13 @@ extern "C" void display_site_data(void)
 {
     ESP_LOGI(TAG, "Drawing site data");
 
+    if (epd == nullptr) {
+        ESP_LOGE(TAG, "Display not initialized");
+        return;
+    }
+
     epd_power_control(true);
+    vTaskDelay(pdMS_TO_TICKS(50));  // Allow display to wake up
 
     // Clear screen to white
     epd->fillScreen(BBEP_WHITE);
@@ -126,11 +122,11 @@ extern "C" void display_site_data(void)
     draw_graph_section(0, 0);  // Graphs fill the screen below header
 
     // Write buffer to display and refresh
-    ESP_LOGI(TAG, "Updating display...");
+    ESP_LOGD(TAG, "Updating display...");
     epd->writePlane();
-    epd->refresh(REFRESH_FULL, true);
+    epd->refresh(REFRESH_FULL, true);   // Always use full refresh
 
-    ESP_LOGI(TAG, "Display updated! Data time: %d ms, Op time: %d ms",
+    ESP_LOGD(TAG, "Display updated! Data time: %d ms, Op time: %d ms",
              epd->dataTime(), epd->opTime());
 
     // Put display to sleep
@@ -142,7 +138,13 @@ extern "C" void display_no_data(void)
 {
     ESP_LOGI(TAG, "Drawing no data screen");
 
+    if (epd == nullptr) {
+        ESP_LOGE(TAG, "Display not initialized");
+        return;
+    }
+
     epd_power_control(true);
+    vTaskDelay(pdMS_TO_TICKS(50));  // Allow display to wake up
 
     epd->fillScreen(BBEP_WHITE);
     epd->setTextColor(BBEP_BLACK, BBEP_WHITE);
@@ -169,7 +171,13 @@ extern "C" void display_wifi_error(void)
 {
     ESP_LOGI(TAG, "Drawing WiFi error screen");
 
+    if (epd == nullptr) {
+        ESP_LOGE(TAG, "Display not initialized");
+        return;
+    }
+
     epd_power_control(true);
+    vTaskDelay(pdMS_TO_TICKS(50));  // Allow display to wake up
 
     epd->fillScreen(BBEP_WHITE);
     epd->setTextColor(BBEP_BLACK, BBEP_WHITE);
@@ -181,7 +189,6 @@ extern "C" void display_wifi_error(void)
     const char* msg1 = "WiFi Error";
     const char* msg2 = "Connect to:";
     int msg1_x = (SCREEN_WIDTH - strlen(msg1) * 12) / 2;
-    int msg2_x = (SCREEN_WIDTH - strlen(msg2) * 12) / 2;
     int ssid_x = (SCREEN_WIDTH - strlen(CONFIG_WIFI_SSID) * 12) / 2;
 
     epd->drawString(msg1, msg1_x, 100);
@@ -278,14 +285,10 @@ static void draw_graph_section(int x, int y)
 
     // Allocate arrays for data availability flags
     bool* has_temp_data = (bool*)malloc(MAX_HOURLY_READINGS * sizeof(bool));
-    bool* has_water_data = (bool*)malloc(MAX_HOURLY_READINGS * sizeof(bool));
-    bool* has_pressure_data = (bool*)malloc(MAX_HOURLY_READINGS * sizeof(bool));
 
-    if (!has_temp_data || !has_water_data || !has_pressure_data) {
+    if (!has_temp_data) {
         ESP_LOGE(TAG, "Failed to allocate memory for data flags");
         free(has_temp_data);
-        free(has_water_data);
-        free(has_pressure_data);
         free(temperature_readings);
         free(water_temp_readings);
         free(pressure_readings);
@@ -295,37 +298,72 @@ static void draw_graph_section(int x, int y)
         return;
     }
 
-    // Aggregate to full 24 hours with missing data marked
+    // Aggregate only air temperature to full 24 hours with missing data marked
     aggregate_to_24_hours(temperature_readings, g_num_readings, hourly_temp, has_temp_data);
-    aggregate_to_24_hours(water_temp_readings, g_num_readings, hourly_water, has_water_data);
-    aggregate_to_24_hours(pressure_readings, g_num_readings, hourly_pressure, has_pressure_data);
 
     int available_hours = 0;
     for (int i = 0; i < MAX_HOURLY_READINGS; i++) {
         if (has_temp_data[i]) available_hours++;
     }
-    ESP_LOGI(TAG, "Aggregated %d readings into %d hours (out of 24)", g_num_readings, available_hours);
+    ESP_LOGD(TAG, "Aggregated %d readings into %d hours (out of 24)", g_num_readings, available_hours);
 
     // Full screen layout - 3 graphs stacked vertically
     int start_y = 32;  // Just below header (FONT_16x16=16px + margins + double line at 28px)
-    int graph_h = 86;  // Height for each graph
-    int graph_spacing = 4;  // Spacing between graphs
+    int graph_h = 80;  // Height for each graph (reduced to make room for common x-axis)
+    int graph_spacing = 2;  // Spacing between graphs
     int graph_w = SCREEN_WIDTH - 12;  // Full width with margins
 
-    // Air Temperature Graph (bar chart) - always 24 hours
+    // Air Temperature Graph (bar chart with negative support) - hourly aggregated
     display_draw_graph(5, start_y, graph_w, graph_h, -10, 10,
                        "Air Temp", hourly_temp, 24,
                        true, true, has_temp_data);
 
-    // Water Temperature Graph (bar chart) - always 24 hours
+    // Water Temperature Graph (line graph) - 5-minute readings, y-axis starts at 0
     display_draw_graph(5, start_y + graph_h + graph_spacing, graph_w, graph_h, 0, 10,
-                       "Water Temp", hourly_water, 24,
-                       true, true, has_water_data);
+                       "Water Temp", water_temp_readings, g_num_readings,
+                       true, false, NULL);
 
-    // Pressure Graph (bar chart) - always 24 hours
+    // Pressure Graph (line graph) - 5-minute readings, y-axis starts at 0
     display_draw_graph(5, start_y + 2 * (graph_h + graph_spacing), graph_w, graph_h, 0, 2,
-                       "Pressure", hourly_pressure, 24,
-                       true, true, has_pressure_data);
+                       "Pressure", pressure_readings, g_num_readings,
+                       true, false, NULL);
+
+    // Draw vertical dashed lines for hourly markers across all three graphs
+    const int num_hours = 24;
+    const int margin_left = 4;
+    const int margin_right = 4;
+    const int margin_top = 18;
+
+    int graph_area_w = graph_w - margin_left - margin_right;
+    int bar_spacing = 3;
+    int available_width = graph_area_w - (num_hours + 1) * bar_spacing;
+    int bar_width = available_width / num_hours;
+
+    if (bar_width < 6) {
+        bar_width = 6;
+        bar_spacing = (graph_area_w - (bar_width * num_hours)) / (num_hours + 1);
+        if (bar_spacing < 1) bar_spacing = 1;
+    }
+
+    int total_bars_width = num_hours * bar_width + (num_hours - 1) * bar_spacing;
+    int x_start = 5 + margin_left + (graph_area_w - total_bars_width) / 2;
+
+    // Draw dashed lines for each hour marker (every 2 hours to match labels)
+    int total_height = 3 * graph_h + 2 * graph_spacing;
+    for (int i = 0; i < num_hours; i++) {
+        if (i % 2 == 0) {  // Only draw lines where we have labels
+            int line_x = x_start + i * (bar_width + bar_spacing);
+
+            // Draw lighter grey dashed vertical line using sparse dotted pattern
+            // Draw 1 pixel on, 5 pixels off for a lighter appearance
+            for (int y = start_y + margin_top; y < start_y + total_height; y += 6) {
+                epd->drawPixel(line_x, y, BBEP_BLACK);
+            }
+        }
+    }
+
+    // Draw common x-axis labels at bottom
+    draw_common_x_axis(5, start_y + 3 * graph_h + 2 * graph_spacing, graph_w);
 
     // Free allocated memory
     free(temperature_readings);
@@ -335,8 +373,6 @@ static void draw_graph_section(int x, int y)
     free(hourly_water);
     free(hourly_pressure);
     free(has_temp_data);
-    free(has_water_data);
-    free(has_pressure_data);
 }
 
 extern "C" void display_draw_graph(int x_pos, int y_pos, int gwidth, int gheight,
@@ -347,7 +383,7 @@ extern "C" void display_draw_graph(int x_pos, int y_pos, int gwidth, int gheight
     const int margin_left = 4;   // Small left margin
     const int margin_top = 18;   // Space for title row with FONT_8x8 (8px + margins)
     const int margin_right = 4;  // Small right margin
-    const int margin_bottom = 12; // Space for x-axis hour labels (FONT_6x8 = 8px + margin)
+    const int margin_bottom = 4; // No x-axis labels in individual graphs (moved to common axis)
 
     float max_y = -10000;
     float min_y = 10000;
@@ -402,25 +438,33 @@ extern "C" void display_draw_graph(int x_pos, int y_pos, int gwidth, int gheight
 
     if (readings < 1) return;
 
+    const int num_points = 24;  // Always 24 hours
+
     if (bar_chart) {
-        // Always draw 24 bars for 24 hours
-        const int num_bars = 24;
+        // Bar chart - supports negative values (bars extend down from zero line)
         int bar_spacing = 3;
-        int available_width = graph_w - (num_bars + 1) * bar_spacing;
-        int bar_width = available_width / num_bars;
+        int available_width = graph_w - (num_points + 1) * bar_spacing;
+        int bar_width = available_width / num_points;
 
         // Ensure minimum bar width
         if (bar_width < 6) {
             bar_width = 6;
-            bar_spacing = (graph_w - (bar_width * num_bars)) / (num_bars + 1);
+            bar_spacing = (graph_w - (bar_width * num_points)) / (num_points + 1);
             if (bar_spacing < 1) bar_spacing = 1;
         }
 
         // Calculate starting x position to center all bars
-        int total_bars_width = num_bars * bar_width + (num_bars - 1) * bar_spacing;
+        int total_bars_width = num_points * bar_width + (num_points - 1) * bar_spacing;
         int x_start = graph_x + (graph_w - total_bars_width) / 2;
 
-        for (int i = 0; i < num_bars; i++) {
+        // Calculate zero line position
+        int zero_y = graph_y + graph_h - (int)((0 - y_min) / (y_max - y_min) * graph_h);
+        // Draw zero line if it's within the graph area
+        if (y_min < 0 && y_max > 0) {
+            epd->drawLine(graph_x, zero_y, graph_x + graph_w, zero_y, BBEP_BLACK);
+        }
+
+        for (int i = 0; i < num_points; i++) {
             int bar_x = x_start + i * (bar_width + bar_spacing);
             int bar_center_x = bar_x + bar_width / 2;
             int bar_center_y = graph_y + graph_h / 2;
@@ -434,18 +478,27 @@ extern "C" void display_draw_graph(int x_pos, int y_pos, int gwidth, int gheight
                 if (constrained < y_min) constrained = y_min;
                 if (constrained > y_max) constrained = y_max;
 
-                int bar_height = (int)((constrained - y_min) / (y_max - y_min) * graph_h);
-                if (bar_height < 1 && constrained > y_min) bar_height = 1;
+                // Calculate bar position relative to zero
+                int value_y = graph_y + graph_h - (int)((constrained - y_min) / (y_max - y_min) * graph_h);
 
-                int bar_y = graph_y + graph_h - bar_height;
+                int bar_y, bar_height;
+                if (constrained >= 0) {
+                    // Positive: bar from zero up to value
+                    bar_y = value_y;
+                    bar_height = zero_y - value_y;
+                } else {
+                    // Negative: bar from zero down to value
+                    bar_y = zero_y;
+                    bar_height = value_y - zero_y;
+                }
 
                 if (bar_height > 0) {
                     epd->fillRect(bar_x, bar_y, bar_width, bar_height, BBEP_BLACK);
                 }
 
                 // Mark current (last) bar with circle
-                if (i == num_bars - 1) {
-                    epd->fillCircle(bar_center_x, bar_y - 2, 2, BBEP_BLACK);
+                if (i == num_points - 1) {
+                    epd->fillCircle(bar_center_x, value_y - 2, 2, BBEP_BLACK);
                 }
             } else {
                 // Draw X mark for missing data
@@ -459,32 +512,103 @@ extern "C" void display_draw_graph(int x_pos, int y_pos, int gwidth, int gheight
                 epd->drawLine(bar_center_x - x_size, bar_center_y + x_size,
                              bar_center_x + x_size, bar_center_y - x_size, BBEP_BLACK);
             }
+        }
+    } else {
+        // Line graph for water temp and pressure (5-minute data)
+        // Use actual number of readings instead of fixed 24 hours
+        int num_data_points = readings;
 
-            // Draw hour labels (23, 22, 21, ..., 1, 0)
-            // Draw every 2nd label to avoid overlap (show 12 labels total)
-            if (i % 2 == 0) {
-                int hour_label = 23 - i;
+        int prev_x = -1, prev_y = -1;
+        bool prev_has_data = false;
 
-                // Draw single digit at a time for reliability
-                epd->setFont(FONT_8x8);
+        for (int i = 0; i < num_data_points; i++) {
+            // Calculate x position proportionally across graph width
+            int point_x = graph_x + (i * graph_w) / (num_data_points - 1);
 
-                char digit_str[2];
-                digit_str[1] = '\0';
+            // Check if this point has data
+            bool has_value = (has_data != NULL) ? has_data[i] : true;
 
-                int text_x = bar_x + (bar_width / 2);  // Start at center
+            if (has_value) {
+                // Draw point for valid data
+                float constrained = data[i];
+                if (constrained < y_min) constrained = y_min;
+                if (constrained > y_max) constrained = y_max;
 
-                if (hour_label >= 10) {
-                    // Two digit number - draw each digit separately
-                    digit_str[0] = '0' + (hour_label / 10);
-                    epd->drawString(digit_str, text_x - 8, y_pos + gheight - margin_bottom + 4);
+                int point_y = graph_y + graph_h - (int)((constrained - y_min) / (y_max - y_min) * graph_h);
 
-                    digit_str[0] = '0' + (hour_label % 10);
-                    epd->drawString(digit_str, text_x, y_pos + gheight - margin_bottom + 4);
-                } else {
-                    // Single digit number - center it
-                    digit_str[0] = '0' + hour_label;
-                    epd->drawString(digit_str, text_x - 4, y_pos + gheight - margin_bottom + 4);
+                // Draw line to previous point if both have data
+                if (prev_has_data && prev_x >= 0) {
+                    epd->drawLine(prev_x, prev_y, point_x, point_y, BBEP_BLACK);
                 }
+
+                // Draw small point (only every few points to avoid clutter)
+                if (i % 6 == 0 || i == num_data_points - 1) {
+                    epd->fillCircle(point_x, point_y, 1, BBEP_BLACK);
+                }
+
+                // Mark current (last) point with larger circle
+                if (i == num_data_points - 1) {
+                    epd->drawCircle(point_x, point_y, 3, BBEP_BLACK);
+                }
+
+                prev_x = point_x;
+                prev_y = point_y;
+                prev_has_data = true;
+            } else {
+                prev_has_data = false;
+            }
+        }
+    }
+}
+
+// Draw common x-axis labels at the bottom
+static void draw_common_x_axis(int x_pos, int y_pos, int width)
+{
+    const int num_labels = 24;
+    const int margin_left = 4;
+    const int margin_right = 4;
+
+    int graph_w = width - margin_left - margin_right;
+
+    // Calculate label spacing to match bar positions
+    int bar_spacing = 3;
+    int available_width = graph_w - (num_labels + 1) * bar_spacing;
+    int bar_width = available_width / num_labels;
+
+    if (bar_width < 6) {
+        bar_width = 6;
+        bar_spacing = (graph_w - (bar_width * num_labels)) / (num_labels + 1);
+        if (bar_spacing < 1) bar_spacing = 1;
+    }
+
+    int total_bars_width = num_labels * bar_width + (num_labels - 1) * bar_spacing;
+    int x_start = x_pos + margin_left + (graph_w - total_bars_width) / 2;
+
+    epd->setFont(FONT_8x8);
+
+    // Draw hour labels (23, 22, 21, ..., 1, 0)
+    // Draw every 2nd label to avoid overlap
+    for (int i = 0; i < num_labels; i++) {
+        if (i % 2 == 0) {
+            int hour_label = 23 - i;
+            int bar_x = x_start + i * (bar_width + bar_spacing);
+
+            char digit_str[2];
+            digit_str[1] = '\0';
+
+            int text_x = bar_x + (bar_width / 2);
+
+            if (hour_label >= 10) {
+                // Two digit number - draw each digit separately
+                digit_str[0] = '0' + (hour_label / 10);
+                epd->drawString(digit_str, text_x - 8, y_pos);
+
+                digit_str[0] = '0' + (hour_label % 10);
+                epd->drawString(digit_str, text_x, y_pos);
+            } else {
+                // Single digit number - center it
+                digit_str[0] = '0' + hour_label;
+                epd->drawString(digit_str, text_x - 4, y_pos);
             }
         }
     }

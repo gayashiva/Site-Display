@@ -109,10 +109,20 @@ esp_err_t wifi_connect(void)
         }
     }
 
+    // Reset retry counter and clear event bits
     s_retry_num = 0;
     xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
 
     ESP_LOGI(TAG, "Connecting to %s...", CONFIG_WIFI_SSID);
+
+    // Check if WiFi is already started, stop it first to reset state
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) == ESP_OK) {
+        ESP_LOGI(TAG, "WiFi already started, restarting...");
+        esp_wifi_stop();
+        vTaskDelay(pdMS_TO_TICKS(100));  // Brief delay for WiFi to fully stop
+    }
+
     ESP_ERROR_CHECK(esp_wifi_start());
 
     // Wait for connection or failure

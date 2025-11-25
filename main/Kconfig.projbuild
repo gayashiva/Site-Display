@@ -131,22 +131,34 @@ menu "Site Display Configuration"
                 GPIO pin for SPI MOSI.
 
         config ROT_UP_PIN
-            int "Rotary Up Pin"
+            int "Rotary Up Key (GPIO6)"
             default 6
             help
-                GPIO pin for rotary switch up.
+                GPIO pin for rotary encoder up/clockwise rotation.
 
         config ROT_DOWN_PIN
-            int "Rotary Down Pin"
+            int "Rotary Down Key (GPIO4)"
             default 4
             help
-                GPIO pin for rotary switch down.
+                GPIO pin for rotary encoder down/counter-clockwise rotation.
 
         config BTN_FETCH_PIN
-            int "Fetch Button Pin"
+            int "Rotary Click Key (GPIO5) - Fetch Current Site"
+            default 5
+            help
+                GPIO pin for rotary encoder push button - fetches current site data.
+
+        config BTN_MENU_PIN
+            int "Menu Button (GPIO2) - Fetch All Sites"
             default 2
             help
-                GPIO pin for fetch data button.
+                GPIO pin for menu button - fetches all sites data.
+
+        config BTN_EXIT_PIN
+            int "Exit Button (GPIO1)"
+            default 1
+            help
+                GPIO pin for exit button - puts device to deep sleep.
     endmenu
 
 endmenu
